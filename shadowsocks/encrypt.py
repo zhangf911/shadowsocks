@@ -1,24 +1,18 @@
 #!/usr/bin/env python
-
-# Copyright (c) 2014 clowwindy
 #
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
+# Copyright 2012-2015 clowwindy
 #
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
 
 from __future__ import absolute_import, division, print_function, \
     with_statement
@@ -28,24 +22,19 @@ import sys
 import hashlib
 import logging
 
-from shadowsocks.crypto import m2, rc4_md5, salsa20_ctr, ctypes_openssl, table
+from shadowsocks import common
+from shadowsocks.crypto import rc4_md5, openssl, sodium, table
 
 
 method_supported = {}
 method_supported.update(rc4_md5.ciphers)
-method_supported.update(salsa20_ctr.ciphers)
-method_supported.update(ctypes_openssl.ciphers)
-# let M2Crypto override ctypes_openssl
-method_supported.update(m2.ciphers)
+method_supported.update(openssl.ciphers)
+method_supported.update(sodium.ciphers)
 method_supported.update(table.ciphers)
 
 
 def random_string(length):
-    try:
-        import M2Crypto.Rand
-        return M2Crypto.Rand.rand_bytes(length)
-    except ImportError:
-        return os.urandom(length)
+    return os.urandom(length)
 
 
 cached_keys = {}
@@ -58,9 +47,8 @@ def try_cipher(key, method=None):
 def EVP_BytesToKey(password, key_len, iv_len):
     # equivalent to OpenSSL's EVP_BytesToKey() with count 1
     # so that we make the same key and iv as nodejs version
-    if hasattr(password, 'encode'):
-        password = password.encode('utf-8')
-    r = cached_keys.get(password, None)
+    cached_key = '%s-%d-%d' % (password, key_len, iv_len)
+    r = cached_keys.get(cached_key, None)
     if r:
         return r
     m = []
@@ -76,7 +64,7 @@ def EVP_BytesToKey(password, key_len, iv_len):
     ms = b''.join(m)
     key = ms[:key_len]
     iv = ms[key_len:key_len + iv_len]
-    cached_keys[password] = (key, iv)
+    cached_keys[cached_key] = (key, iv)
     return key, iv
 
 
@@ -106,8 +94,7 @@ class Encryptor(object):
         return len(self.cipher_iv)
 
     def get_cipher(self, password, method, op, iv):
-        if hasattr(password, 'encode'):
-            password = password.encode('utf-8')
+        password = common.to_bytes(password)
         m = self._method_info
         if m[0] > 0:
             key, iv_ = EVP_BytesToKey(password, m[0], m[1])
@@ -161,3 +148,40 @@ def encrypt_all(password, method, op, data):
     cipher = m(method, key, iv, op)
     result.append(cipher.update(data))
     return b''.join(result)
+
+
+CIPHERS_TO_TEST = [
+    'aes-128-cfb',
+    'aes-256-cfb',
+    'rc4-md5',
+    'salsa20',
+    'chacha20',
+    'table',
+]
+
+
+def test_encryptor():
+    from os import urandom
+    plain = urandom(10240)
+    for method in CIPHERS_TO_TEST:
+        logging.warn(method)
+        encryptor = Encryptor(b'key', method)
+        decryptor = Encryptor(b'key', method)
+        cipher = encryptor.encrypt(plain)
+        plain2 = decryptor.decrypt(cipher)
+        assert plain == plain2
+
+
+def test_encrypt_all():
+    from os import urandom
+    plain = urandom(10240)
+    for method in CIPHERS_TO_TEST:
+        logging.warn(method)
+        cipher = encrypt_all(b'key', method, 1, plain)
+        plain2 = encrypt_all(b'key', method, 0, cipher)
+        assert plain == plain2
+
+
+if __name__ == '__main__':
+    test_encrypt_all()
+    test_encryptor()
